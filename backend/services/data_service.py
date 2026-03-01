@@ -5,10 +5,26 @@ Handles file parsing, quality assessment, data cleaning, synthetic data
 generation, and data preview for the Overview page.
 """
 
+import math
 import numpy as np
 import pandas as pd
 from io import BytesIO
 from typing import Tuple, Dict, Any
+
+
+def _to_python(val: object) -> object:
+    """Convert a value to a JSON-safe Python native type."""
+    if val is None:
+        return None
+    if isinstance(val, float) and math.isnan(val):
+        return None
+    if isinstance(val, np.integer):
+        return int(val)
+    if isinstance(val, np.floating):
+        return None if np.isnan(val) else float(val)
+    if isinstance(val, np.bool_):
+        return bool(val)
+    return val
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +240,11 @@ def generate_synthetic(df: pd.DataFrame, n_records: int) -> pd.DataFrame:
 
 def get_preview(df: pd.DataFrame) -> Dict[str, Any]:
     """Return the first 5 rows and detected column types."""
-    preview_rows = df.head(5).where(pd.notna(df.head(5)), None).to_dict(orient="records")
+    raw_rows = df.head(5).to_dict(orient="records")
+    preview_rows = [
+        {col: _to_python(val) for col, val in row.items()}
+        for row in raw_rows
+    ]
 
     column_types = []
     for col in df.columns:

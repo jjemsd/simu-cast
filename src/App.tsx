@@ -11,13 +11,39 @@ import { UnifiedAuthModal } from './components/auth/UnifiedAuthModal';
 import { AuthUser } from './components/auth/AuthHeader';
 import { toast } from 'sonner';
 
+export interface QualityIssue {
+  count: number;
+  percentage: number;
+  columns: string[];
+}
+
+export interface QualityReport {
+  overall_quality: number;
+  missing_values: QualityIssue;
+  outliers: QualityIssue;
+  duplicates: QualityIssue;
+  text_issues: QualityIssue;
+  invalid: QualityIssue;
+}
+
+export interface ColumnInfo {
+  column: string;
+  type: 'Numeric' | 'Date' | 'Text' | 'Categorical';
+  missingCount: number;
+}
+
 export interface Dataset {
   id: number;
+  datasetId: string;              // backend UUID for API calls
   name: string;
   records: number;
+  columns: number;
   lastUpdated: string;
   status: string;
   quality: number;
+  qualityReport: QualityReport | null;
+  columnTypes: ColumnInfo[];      // from /preview
+  previewRows: Record<string, unknown>[];  // from /preview
   type: 'Real' | 'Synthetic';
   inModeling?: boolean;
   performanceIssue?: boolean;
@@ -31,19 +57,25 @@ export interface ModelResult {
   f1Score: number;
 }
 
+export interface FeatureConfig {
+  min: number;
+  max: number;
+  mean: number;
+  std: number;
+}
+
 export interface ScenarioResult {
   id: number;
   name: string;
   date: string;
   datasetName: string;
   modelUsed: string;
-  parameters: {
-    studyHours: number;
-    attendanceRate: number;
-    tutorialSessions: number;
-    assignmentCompletion: number;
-  };
+  /** Keys are actual CSV column names; values are the slider values chosen */
+  parameters: Record<string, number>;
+  /** Statistical metadata per feature column, from the trained model */
+  featureConfig?: Record<string, FeatureConfig>;
   outcome: number;
+  baselineOutcome?: number;
   outcomeChange: number;
   selected?: boolean;
 }
@@ -64,13 +96,13 @@ export interface AppState {
 export default function App() {
   const [currentPage, setCurrentPage] = useState('landing');
   const [scrollToDemo, setScrollToDemo] = useState(false);
-  
+
   // Authentication state
   const [user, setUser] = useState<AuthUser | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<'login' | 'signup'>('login');
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
-  
+
   // Global state management for workflow context
   const [appState, setAppState] = useState<AppState>({
     datasets: [],
@@ -90,23 +122,19 @@ export default function App() {
   const handleNavigateToDemo = () => {
     setCurrentPage('landing');
     setScrollToDemo(true);
-    // Reset scroll flag after navigation
     setTimeout(() => setScrollToDemo(false), 500);
   };
 
   // Auth handlers
   const handleLogin = (email: string, _password: string, _rememberMe: boolean) => {
-    // In a real app, this would call an API
     const newUser: AuthUser = {
-      name: email.split('@')[0], // Use email username as name
+      name: email.split('@')[0],
       email,
       isGuest: false,
     };
     setUser(newUser);
     setShowAuthModal(false);
     toast.success(`Welcome back, ${newUser.name}!`);
-    
-    // Navigate to pending page if there is one
     if (pendingNavigation) {
       setCurrentPage(pendingNavigation);
       setPendingNavigation(null);
@@ -114,7 +142,6 @@ export default function App() {
   };
 
   const handleSignUp = (name: string, email: string, _password: string) => {
-    // In a real app, this would call an API
     const newUser: AuthUser = {
       name,
       email,
@@ -123,8 +150,6 @@ export default function App() {
     setUser(newUser);
     setShowAuthModal(false);
     toast.success(`Account created! Welcome, ${name}!`);
-    
-    // Navigate to pending page if there is one
     if (pendingNavigation) {
       setCurrentPage(pendingNavigation);
       setPendingNavigation(null);
@@ -139,8 +164,6 @@ export default function App() {
     };
     setUser(guestUser);
     toast.info('Continuing as guest. Login to save your work.');
-    
-    // Navigate to pending page if there is one
     if (pendingNavigation) {
       setCurrentPage(pendingNavigation);
       setPendingNavigation(null);
@@ -149,9 +172,7 @@ export default function App() {
 
   const handleLogout = () => {
     setUser(null);
-    // Clear any pending navigation
     setPendingNavigation(null);
-    // Redirect to landing page
     setCurrentPage('landing');
     toast.info('Logged out successfully');
   };
@@ -166,13 +187,10 @@ export default function App() {
     setShowAuthModal(true);
   };
 
-  // Handle getting started from landing page
   const handleGetStartedFromLanding = () => {
-    // If user is already logged in, go directly to overview
     if (user) {
       setCurrentPage('overview');
     } else {
-      // Show auth modal and set pending navigation
       setPendingNavigation('overview');
       setAuthModalTab('login');
       setShowAuthModal(true);
@@ -183,18 +201,18 @@ export default function App() {
     switch (currentPage) {
       case 'landing':
         return (
-          <LandingPage 
-            onGetStarted={handleGetStartedFromLanding} 
+          <LandingPage
+            onGetStarted={handleGetStartedFromLanding}
             scrollToDemo={scrollToDemo}
             onShowAuth={handleGetStartedFromLanding}
           />
         );
       case 'overview':
         return (
-          <Overview 
-            onNavigate={setCurrentPage} 
-            appState={appState} 
-            updateAppState={updateAppState} 
+          <Overview
+            onNavigate={setCurrentPage}
+            appState={appState}
+            updateAppState={updateAppState}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -204,10 +222,10 @@ export default function App() {
         );
       case 'modeling':
         return (
-          <PredictiveModeling 
-            onNavigate={setCurrentPage} 
-            appState={appState} 
-            updateAppState={updateAppState} 
+          <PredictiveModeling
+            onNavigate={setCurrentPage}
+            appState={appState}
+            updateAppState={updateAppState}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -217,10 +235,10 @@ export default function App() {
         );
       case 'scenarios':
         return (
-          <WhatIfScenarios 
-            onNavigate={setCurrentPage} 
-            appState={appState} 
-            updateAppState={updateAppState} 
+          <WhatIfScenarios
+            onNavigate={setCurrentPage}
+            appState={appState}
+            updateAppState={updateAppState}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -231,9 +249,9 @@ export default function App() {
       case 'insights':
       case 'reports':
         return (
-          <InsightsAndReport 
-            onNavigate={setCurrentPage} 
-            appState={appState} 
+          <InsightsAndReport
+            onNavigate={setCurrentPage}
+            appState={appState}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -243,8 +261,8 @@ export default function App() {
         );
       case 'settings':
         return (
-          <Settings 
-            onNavigate={setCurrentPage} 
+          <Settings
+            onNavigate={setCurrentPage}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -254,8 +272,8 @@ export default function App() {
         );
       case 'history':
         return (
-          <History 
-            onNavigate={setCurrentPage} 
+          <History
+            onNavigate={setCurrentPage}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -265,10 +283,10 @@ export default function App() {
         );
       default:
         return (
-          <Overview 
-            onNavigate={setCurrentPage} 
-            appState={appState} 
-            updateAppState={updateAppState} 
+          <Overview
+            onNavigate={setCurrentPage}
+            appState={appState}
+            updateAppState={updateAppState}
             onWatchDemo={handleNavigateToDemo}
             user={user}
             onLoginClick={handleOpenLoginModal}
@@ -283,8 +301,6 @@ export default function App() {
     <>
       {renderPage()}
       <Toaster />
-      
-      {/* Auth Modal */}
       <UnifiedAuthModal
         open={showAuthModal}
         onClose={() => setShowAuthModal(false)}

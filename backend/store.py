@@ -10,7 +10,7 @@ datasets_store: dict = {}
 #   'target_col': str,
 #   'task_type': 'classification'|'regression',
 #   'model_type': str,
-#   'param_col_mapping': dict,
+#   'feature_config': {col: {min, max, mean, std}},   # derived from uploaded dataset
 #   'dataset_id': str,
 #   'label_encoder': LabelEncoder|None,
 #   'metrics': dict,

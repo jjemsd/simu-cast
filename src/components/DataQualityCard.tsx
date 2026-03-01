@@ -2,26 +2,33 @@ import { useState } from 'react';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Checkbox } from './ui/checkbox';
-import { ChevronDown, ChevronUp, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface DataQualityCardProps {
   type: 'missing' | 'outliers' | 'duplicates' | 'invalid' | 'text';
   percentage?: number;
   count?: number;
+  /** Real column names affected by this issue, from the backend quality report */
+  affectedColumns?: string[];
   disabled?: boolean;
   isExpanded: boolean;
   onToggleExpand: () => void;
+  /** Called with the cleaning options object when the user clicks Apply Fix */
+  onApply: (options: Record<string, string | boolean>) => Promise<void>;
 }
 
 export default function DataQualityCard({
   type,
   percentage,
   count,
+  affectedColumns = [],
   disabled = false,
   isExpanded,
-  onToggleExpand
+  onToggleExpand,
+  onApply,
 }: DataQualityCardProps) {
+  const [isLoading, setIsLoading] = useState(false);
   const [missingValuesFixes, setMissingValuesFixes] = useState({
     meanImputation: false,
     medianImputation: false,
@@ -71,44 +78,72 @@ export default function DataQualityCard({
     removeExtraSpaces: false
   });
 
-  const handleApplyFix = () => {
+  const handleApplyFix = async () => {
+    let options: Record<string, string | boolean> | null = null;
+
     if (type === 'missing') {
-      if (!missingValuesFixes.meanImputation && !missingValuesFixes.medianImputation && !missingValuesFixes.modeImputation && !missingValuesFixes.forwardFill && !missingValuesFixes.backwardFill && !missingValuesFixes.interpolation && !missingValuesFixes.removeRows) {
+      const { removeRows, meanImputation, medianImputation, modeImputation,
+              forwardFill, backwardFill, interpolation } = missingValuesFixes;
+      if (!removeRows && !meanImputation && !medianImputation && !modeImputation
+          && !forwardFill && !backwardFill && !interpolation) {
         toast.error('Please select at least one fix option');
         return;
       }
-      toast.success('Missing values fixed successfully!');
-      setMissingValuesFixes({ meanImputation: false, medianImputation: false, modeImputation: false, forwardFill: false, backwardFill: false, interpolation: false, removeRows: false });
+      // Map UI selections to backend method
+      let method = 'mean';
+      if (removeRows) method = 'remove';
+      else if (medianImputation) method = 'median';
+      else if (modeImputation) method = 'mode';
+      // meanImputation / time-series methods all map to 'mean'
+      options = { fix_missing: true, missing_method: method };
     } else if (type === 'outliers') {
       if (!outliersFixes.capValues && !outliersFixes.removeOutliers) {
         toast.error('Please select at least one fix option');
         return;
       }
-      toast.success('Outliers fixed successfully!');
-      setOutliersFixes({ capValues: false, removeOutliers: false });
+      options = {
+        fix_outliers: true,
+        outlier_method: outliersFixes.removeOutliers ? 'remove' : 'cap',
+      };
     } else if (type === 'duplicates') {
       if (!duplicatesFixes.removeDuplicates) {
         toast.error('Please select at least one fix option');
         return;
       }
-      toast.success('Duplicates removed successfully!');
-      setDuplicatesFixes({ removeDuplicates: false });
+      options = { fix_duplicates: true };
+    } else if (type === 'text') {
+      if (!textCleaningOptions.convertLowercase && !textCleaningOptions.removePunctuation
+          && !textCleaningOptions.removeExtraSpaces) {
+        toast.error('Please select at least one fix option');
+        return;
+      }
+      options = { fix_text: true };
     } else if (type === 'invalid') {
       if (!invalidDataFixes.removeInvalidRows && !invalidDataFixes.capWithinRange) {
         toast.error('Please select at least one fix option');
         return;
       }
-      toast.success('Invalid data fixed successfully!');
-      setInvalidDataFixes({ removeInvalidRows: false, capWithinRange: false });
-    } else if (type === 'text') {
-      if (!textCleaningOptions.convertLowercase && !textCleaningOptions.removePunctuation && !textCleaningOptions.removeExtraSpaces) {
-        toast.error('Please select at least one fix option');
-        return;
-      }
-      toast.success('Text data cleaned successfully!');
-      setTextCleaningOptions({ convertLowercase: false, removePunctuation: false, removeExtraSpaces: false });
+      // Backend handles invalid data via outlier capping/removal
+      options = {
+        fix_outliers: true,
+        outlier_method: invalidDataFixes.removeInvalidRows ? 'remove' : 'cap',
+      };
     }
-    onToggleExpand();
+
+    if (!options) return;
+
+    setIsLoading(true);
+    try {
+      await onApply(options);
+      // Reset selections after successful apply
+      setMissingValuesFixes({ meanImputation: false, medianImputation: false, modeImputation: false, forwardFill: false, backwardFill: false, interpolation: false, removeRows: false });
+      setOutliersFixes({ capValues: false, removeOutliers: false });
+      setDuplicatesFixes({ removeDuplicates: false });
+      setInvalidDataFixes({ removeInvalidRows: false, capWithinRange: false });
+      setTextCleaningOptions({ convertLowercase: false, removePunctuation: false, removeExtraSpaces: false });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const getLabel = () => {
@@ -123,7 +158,7 @@ export default function DataQualityCard({
 
   return (
     <div className="space-y-0">
-      <div 
+      <div
         className="bg-white p-4 rounded border border-slate-200 cursor-pointer hover:border-amber-300 transition-all"
         onClick={onToggleExpand}
       >
@@ -131,10 +166,12 @@ export default function DataQualityCard({
           <div className="flex-1">
             <p className="text-sm font-medium text-slate-700 mb-1">{getLabel()}</p>
             {percentage !== undefined && (
-              <p className="text-2xl font-bold text-amber-600">{percentage}%</p>
-            )}
-            {count !== undefined && (
-              <p className="text-2xl font-bold text-amber-600">{count}</p>
+              <p className="text-2xl font-bold text-amber-600">
+                {percentage.toFixed(1)}%
+                {count !== undefined && count > 0 && (
+                  <span className="text-sm font-normal text-slate-500 ml-2">({count} issues)</span>
+                )}
+              </p>
             )}
           </div>
           {isExpanded ? (
@@ -153,18 +190,17 @@ export default function DataQualityCard({
             {type === 'missing' && (
               <>
                 <h5 className="font-medium text-sm mb-3">Missing Value Details</h5>
-                
+
                 <div className="mb-4 space-y-2">
                   <p className="text-xs text-slate-500 font-medium mb-2">Affected Columns:</p>
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Study Hours</span>
-                      <span className="text-xs text-slate-500">12 rows (0.9%)</span>
-                    </div>
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Attendance Rate</span>
-                      <span className="text-xs text-slate-500">43 rows (3.1%)</span>
-                    </div>
+                    {affectedColumns.length > 0 ? affectedColumns.map(col => (
+                      <div key={col} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
+                        <span className="text-sm">{col}</span>
+                      </div>
+                    )) : (
+                      <p className="text-xs text-slate-400 italic px-1">No affected columns detected.</p>
+                    )}
                   </div>
                 </div>
 
@@ -297,22 +333,21 @@ export default function DataQualityCard({
             {type === 'outliers' && (
               <>
                 <h5 className="font-medium text-sm mb-3">Outlier Detection Details</h5>
-                
+
                 <div className="mb-4 space-y-2">
                   <p className="text-xs text-slate-500 font-medium mb-2">Columns with Detected Outliers:</p>
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Study Hours</span>
-                      <span className="text-xs text-slate-500">8 extreme values</span>
-                    </div>
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Performance Score</span>
-                      <span className="text-xs text-slate-500">5 extreme values</span>
-                    </div>
+                    {affectedColumns.length > 0 ? affectedColumns.map(col => (
+                      <div key={col} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
+                        <span className="text-sm">{col}</span>
+                      </div>
+                    )) : (
+                      <p className="text-xs text-slate-400 italic px-1">No outlier columns detected.</p>
+                    )}
                   </div>
                   <div className="bg-blue-50 border border-blue-200 rounded p-2 mt-2">
                     <p className="text-xs text-blue-900">
-                      <span className="font-medium">Detection Method:</span> IQR Method
+                      <span className="font-medium">Detection Method:</span> IQR (Interquartile Range)
                     </p>
                   </div>
                 </div>
@@ -355,11 +390,11 @@ export default function DataQualityCard({
             {type === 'duplicates' && (
               <>
                 <h5 className="font-medium text-sm mb-3">Duplicate Rows Details</h5>
-                
+
                 <div className="mb-4">
                   <div className="bg-slate-50 border border-slate-200 rounded p-3">
                     <p className="text-sm">
-                      <span className="font-bold text-2xl text-amber-600">27</span>
+                      <span className="font-bold text-2xl text-amber-600">{count ?? 0}</span>
                       <span className="text-slate-600 ml-2">duplicate rows detected</span>
                     </p>
                   </div>
@@ -390,18 +425,17 @@ export default function DataQualityCard({
             {type === 'invalid' && (
               <>
                 <h5 className="font-medium text-sm mb-3">Invalid Data Details</h5>
-                
+
                 <div className="mb-4 space-y-2">
                   <p className="text-xs text-slate-500 font-medium mb-2">Columns with Invalid Data:</p>
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Age</span>
-                      <span className="text-xs text-slate-500">3 invalid values</span>
-                    </div>
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Salary</span>
-                      <span className="text-xs text-slate-500">2 invalid values</span>
-                    </div>
+                    {affectedColumns.length > 0 ? affectedColumns.map(col => (
+                      <div key={col} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
+                        <span className="text-sm">{col}</span>
+                      </div>
+                    )) : (
+                      <p className="text-xs text-slate-400 italic px-1">No invalid data detected.</p>
+                    )}
                   </div>
                 </div>
 
@@ -447,14 +481,13 @@ export default function DataQualityCard({
                 <div className="mb-4 space-y-2">
                   <p className="text-xs text-slate-500 font-medium mb-2">Columns with Text Data:</p>
                   <div className="space-y-1.5">
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Comments</span>
-                      <span className="text-xs text-slate-500">150 rows</span>
-                    </div>
-                    <div className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
-                      <span className="text-sm">Description</span>
-                      <span className="text-xs text-slate-500">200 rows</span>
-                    </div>
+                    {affectedColumns.length > 0 ? affectedColumns.map(col => (
+                      <div key={col} className="flex items-center justify-between bg-slate-50 px-3 py-2 rounded">
+                        <span className="text-sm">{col}</span>
+                      </div>
+                    )) : (
+                      <p className="text-xs text-slate-400 italic px-1">No text columns detected.</p>
+                    )}
                   </div>
                 </div>
 
@@ -507,11 +540,15 @@ export default function DataQualityCard({
 
             <Button
               onClick={handleApplyFix}
-              disabled={disabled}
+              disabled={disabled || isLoading}
               className="w-full bg-amber-500 hover:bg-amber-600"
             >
-              <Sparkles size={16} className="mr-2" />
-              Apply Selected Fix
+              {isLoading ? (
+                <Loader2 size={16} className="mr-2 animate-spin" />
+              ) : (
+                <Sparkles size={16} className="mr-2" />
+              )}
+              {isLoading ? 'Applying…' : 'Apply Selected Fix'}
             </Button>
           </div>
         </div>

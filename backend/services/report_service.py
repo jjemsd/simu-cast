@@ -2,74 +2,65 @@
 Step 4 – Insights & Report service.
 
 Generates AI-style textual insights from a scenario result and produces
-a downloadable HTML report (matching the format the frontend already uses).
+a downloadable HTML report.
+
+All parameter labels, baselines, and units are derived from the scenario's
+featureConfig (populated from the actual uploaded dataset), not hardcoded.
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 # ---------------------------------------------------------------------------
 # Insight generation
 # ---------------------------------------------------------------------------
 
-_BASELINES = {
-    "study_hours": 15,
-    "attendance_rate": 75,
-    "tutorial_sessions": 2,
-    "assignment_completion": 80,
-}
-
-_WEIGHTS = {
-    "study_hours": 0.5,
-    "attendance_rate": 0.3,
-    "tutorial_sessions": 2.0,
-    "assignment_completion": 0.2,
-}
-
-_LABELS = {
-    "study_hours": "study hours",
-    "attendance_rate": "attendance rate",
-    "tutorial_sessions": "tutorial sessions",
-    "assignment_completion": "assignment completion",
-}
-
-_UNITS = {
-    "study_hours": " hrs/week",
-    "attendance_rate": "%",
-    "tutorial_sessions": " sessions",
-    "assignment_completion": "%",
-}
+def _param_impact(col: str, params: Dict, feature_config: Dict) -> float:
+    """
+    Compute the normalised impact of a single parameter change.
+    Uses z-score distance from the column's training mean.
+    """
+    val = params.get(col)
+    if val is None or col not in feature_config:
+        return 0.0
+    fc = feature_config[col]
+    mean = fc.get("mean", float(val))
+    std = fc.get("std", 1.0) or 1.0
+    return abs((float(val) - mean) / std)
 
 
 def generate_insights(scenario: Dict[str, Any], target_label: str) -> Dict[str, Any]:
     """
     Derive key insight and recommended action from a saved scenario.
 
+    The scenario dict must include:
+        parameters    – {column_name: value}  (actual CSV column names)
+        featureConfig – {column_name: {min, max, mean, std}}
+        outcomeChange – float
+
     Returns a dict with 'keyInsight' and 'recommendedAction'.
     """
-    params = scenario.get("parameters", {})
-    outcome_change: float = scenario.get("outcomeChange", 0.0)
+    params: Dict = scenario.get("parameters", {})
+    feature_config: Dict = scenario.get("featureConfig", {})
+    outcome_change: float = float(scenario.get("outcomeChange", 0.0))
     is_positive = outcome_change >= 0
 
-    # Map frontend camelCase param names to internal snake_case
-    param_values = {
-        "study_hours": params.get("studyHours", 15),
-        "attendance_rate": params.get("attendanceRate", 75),
-        "tutorial_sessions": params.get("tutorialSessions", 2),
-        "assignment_completion": params.get("assignmentCompletion", 80),
-    }
-
-    # Find the parameter with the greatest weighted impact
-    scored = sorted(
-        _BASELINES.keys(),
-        key=lambda p: abs((param_values[p] - _BASELINES[p]) * _WEIGHTS[p]),
+    # Find the parameter with the greatest normalised deviation from its mean
+    ranked = sorted(
+        params.keys(),
+        key=lambda col: _param_impact(col, params, feature_config),
         reverse=True,
     )
-    top_param = scored[0]
-    top_val = param_values[top_param]
-    top_label = _LABELS[top_param]
-    top_unit = _UNITS[top_param]
+    top_param = ranked[0] if ranked else None
+
+    if top_param:
+        top_val = float(params[top_param])
+        top_mean = feature_config.get(top_param, {}).get("mean", top_val)
+        top_label = top_param.replace("_", " ").title()
+    else:
+        top_val = top_mean = 0.0
+        top_label = "parameter"
 
     # ---- Key insight ----
     if abs(outcome_change) < 1:
@@ -81,37 +72,36 @@ def generate_insights(scenario: Dict[str, Any], target_label: str) -> Dict[str, 
             ),
             "detailedAnalysis": (
                 "Statistical analysis indicates the parameter adjustments fall within the margin of "
-                "error for predictive accuracy. Try adjusting at least one variable by 25 % or more, "
+                "error for predictive accuracy. Try adjusting at least one variable by 25% or more, "
                 "or combine multiple interventions."
             ),
         }
     elif is_positive:
         key_insight = {
-            "title": f"{top_label.title()} Improvement Shows Promise",
+            "title": f"{top_label} Improvement Shows Promise",
             "description": (
-                f"Increasing {top_label} to {top_val}{top_unit} correlates with improved "
-                f"{target_label} by {abs(outcome_change):.1f} %. "
+                f"Adjusting {top_label} to {top_val:.3g} correlates with improved "
+                f"{target_label} by {abs(outcome_change):.1f}%. "
                 f"This is the primary driver of the predicted gain."
             ),
             "detailedAnalysis": (
                 f"Model analysis reveals that {top_label} has strong predictive power in the "
-                f"current dataset. Historical patterns suggest students who maintain {top_label} "
-                f"at this level consistently outperform peers by 15–25 %. "
-                f"The relationship appears linear within this range, suggesting room for further optimisation."
+                f"current dataset. The value was changed from a baseline of {top_mean:.3g} "
+                f"to {top_val:.3g}, representing the largest normalised deviation among all "
+                f"adjusted parameters. The relationship suggests room for further optimisation."
             ),
         }
     else:
         key_insight = {
-            "title": f"{top_label.title()} Reduction May Hinder Outcomes",
+            "title": f"{top_label} Change May Hinder Outcomes",
             "description": (
-                f"Reducing {top_label} to {top_val}{top_unit} shows negative correlation with "
-                f"{target_label} ({abs(outcome_change):.1f} % decline). "
+                f"Adjusting {top_label} to {top_val:.3g} shows negative correlation with "
+                f"{target_label} ({abs(outcome_change):.1f}% decline). "
                 f"This configuration may not align with optimal intervention strategies."
             ),
             "detailedAnalysis": (
-                f"The predictive model indicates that maintaining {top_label} below recommended "
-                f"thresholds introduces significant risk. Data suggests a threshold effect where "
-                f"values below the baseline considerably impact outcome probabilities. "
+                f"The predictive model indicates that adjusting {top_label} away from its "
+                f"baseline value of {top_mean:.3g} introduces risk. "
                 f"This parameter requires careful monitoring."
             ),
         }
@@ -122,15 +112,12 @@ def generate_insights(scenario: Dict[str, Any], target_label: str) -> Dict[str, 
             "title": "Test More Substantial Interventions",
             "description": (
                 "Current parameters are too close to baseline to generate meaningful predictions. "
-                "Adjust at least one variable by 25 % or more to derive actionable insights."
+                "Adjust at least one variable by 25% or more to derive actionable insights."
             ),
         }
     elif is_positive:
-        high_impact = (
-            param_values["study_hours"] > 20
-            or param_values["attendance_rate"] > 85
-            or param_values["tutorial_sessions"] > 3
-        )
+        # "High impact" if any parameter deviated by more than 1 std from its mean
+        high_impact = any(_param_impact(col, params, feature_config) > 1.0 for col in params)
         if high_impact:
             recommended_action = {
                 "title": "Implement High-Impact Intervention Program",
@@ -179,23 +166,32 @@ def generate_report_html(
     key_insight = insights["keyInsight"]
     recommended_action = insights["recommendedAction"]
 
-    params = scenario.get("parameters", {})
-    outcome: float = scenario.get("outcome", 0.0)
-    outcome_change: float = scenario.get("outcomeChange", 0.0)
+    params: Dict = scenario.get("parameters", {})
+    feature_config: Dict = scenario.get("featureConfig", {})
+    outcome: float = float(scenario.get("outcome", 0.0))
+    baseline_outcome: float = float(scenario.get("baselineOutcome", outcome))
+    outcome_change: float = float(scenario.get("outcomeChange", 0.0))
     is_positive = outcome_change >= 0
 
     now = datetime.now().strftime("%B %d, %Y – %I:%M %p")
     change_sign = "+" if outcome_change >= 0 else ""
 
-    def _param_row(label: str, value: Any, baseline: Any, unit: str) -> str:
+    def _param_row(col_name: str, value: float) -> str:
+        fc = feature_config.get(col_name, {})
+        baseline = fc.get("mean", value)
         diff = value - baseline
-        diff_str = f"{'+' if diff >= 0 else ''}{diff:.0f}{unit}"
+        label = col_name.replace("_", " ").title()
+        diff_str = f"{'+' if diff >= 0 else ''}{diff:.3g}"
         return (
             f"<tr><td>{label}</td>"
-            f"<td>{value}{unit}</td>"
-            f"<td>{baseline}{unit}</td>"
+            f"<td>{value:.3g}</td>"
+            f"<td>{baseline:.3g}</td>"
             f"<td>{diff_str}</td></tr>"
         )
+
+    param_rows_html = "\n".join(
+        _param_row(col, float(val)) for col, val in params.items()
+    ) if params else "<tr><td colspan='4'>No parameters recorded</td></tr>"
 
     insight_block = ""
     if include_insights:
@@ -300,6 +296,10 @@ def generate_report_html(
     <div class="outcome-summary">
       <div class="outcome-row">
         <div>
+          <div class="outcome-label">Baseline {target_label}</div>
+          <div class="outcome-value">{baseline_outcome:.2f}%</div>
+        </div>
+        <div>
           <div class="outcome-label">Predicted {target_label}</div>
           <div class="outcome-value">{outcome:.2f}%</div>
         </div>
@@ -321,13 +321,10 @@ def generate_report_html(
     <h2 class="section-title">Scenario Configuration</h2>
     <table>
       <thead>
-        <tr><th>Parameter</th><th>Scenario Value</th><th>Baseline</th><th>Change</th></tr>
+        <tr><th>Parameter</th><th>Scenario Value</th><th>Baseline (Mean)</th><th>Change</th></tr>
       </thead>
       <tbody>
-        {_param_row("Study Hours per Week", params.get("studyHours", 15), 15, " hrs")}
-        {_param_row("Attendance Rate", params.get("attendanceRate", 75), 75, "%")}
-        {_param_row("Tutorial Sessions", params.get("tutorialSessions", 2), 2, " sessions")}
-        {_param_row("Assignment Completion", params.get("assignmentCompletion", 80), 80, "%")}
+        {param_rows_html}
       </tbody>
     </table>
   </div>
@@ -344,7 +341,8 @@ def generate_report_html(
       This analysis employs predictive modelling techniques to estimate the likely outcome of the
       specified scenario. The {model_type} model was trained on historical data from the {dataset_name}
       dataset to identify patterns and relationships between input variables and the target outcome.
-      Predictions assume that the learned relationships hold under the simulated conditions.
+      The baseline outcome represents the model's prediction when all features are held at their
+      training-data means. Predictions assume that the learned relationships hold under the simulated conditions.
     </p>
   </div>
 
