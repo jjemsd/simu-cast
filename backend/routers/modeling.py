@@ -126,7 +126,7 @@ def train_model(body: dict = Body(...)):
     target_col = find_target_column(df, target_label)
 
     try:
-        pipeline, metrics, feature_cols, label_encoder, param_col_mapping = train_final_model(
+        pipeline, metrics, feature_cols, label_encoder, feature_config = train_final_model(
             df, target_col, model_type, task_type, hyperparams
         )
     except Exception as exc:
@@ -139,7 +139,7 @@ def train_model(body: dict = Body(...)):
         "target_col": target_col,
         "task_type": task_type,
         "model_type": model_type,
-        "param_col_mapping": param_col_mapping,
+        "feature_config": feature_config,
         "dataset_id": dataset_id,
         "label_encoder": label_encoder,
         "metrics": metrics,
@@ -150,6 +150,7 @@ def train_model(body: dict = Body(...)):
         "modelId": model_id,
         "modelType": model_type,
         "targetColumn": target_col,
+        "featureConfig": feature_config,
         **metrics,
     }
 

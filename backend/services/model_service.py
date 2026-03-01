@@ -33,71 +33,71 @@ from sklearn.svm import SVC, SVR
 
 
 # ---------------------------------------------------------------------------
-# Column matching – maps slider parameter names → actual CSV column names
+# Helpers
 # ---------------------------------------------------------------------------
-
-_PARAM_PATTERNS: Dict[str, List[str]] = {
-    "study_hours": ["study hours", "studyhours", "study_hours", "hours", "weekly hours", "study time"],
-    "attendance_rate": ["attendance", "attendance rate", "attendance_rate", "present"],
-    "tutorial_sessions": ["tutorial", "tutorials", "tutorial sessions", "tutorial_sessions", "sessions"],
-    "assignment_completion": [
-        "assignment",
-        "assignments",
-        "assignment completion",
-        "assignment_completion",
-        "homework",
-        "completion",
-    ],
-}
-
 
 def _normalize(s: str) -> str:
     return s.lower().replace("_", " ").replace("/", " ").strip()
 
 
-def find_column(df: pd.DataFrame, patterns: List[str]) -> Optional[str]:
-    """Find the first column whose normalized name matches any pattern."""
-    col_map = {_normalize(c): c for c in df.columns}
-    for pattern in patterns:
-        if pattern in col_map:
-            return col_map[pattern]
-    return None
-
-
-def get_param_col_mapping(df: pd.DataFrame, feature_cols: List[str]) -> Dict[str, Optional[str]]:
-    """Return {slider_param: actual_column_name} for each of the 4 scenario parameters."""
-    sub = df[feature_cols]
-    return {param: find_column(sub, patterns) for param, patterns in _PARAM_PATTERNS.items()}
-
-
 def find_target_column(df: pd.DataFrame, label: str) -> str:
     """
-    Fuzzy-match a display label (e.g. 'Performance Score') to an actual
-    column name in the DataFrame. Falls back to the last numeric column.
+    Match a user-provided label to an actual column name in the DataFrame.
+    Tries exact match, then partial/substring match, then falls back to
+    the last numeric column.
     """
     norm_label = _normalize(label)
+
+    # Exact match
     for col in df.columns:
         if _normalize(col) == norm_label:
             return col
+
     # Partial match
     for col in df.columns:
         if norm_label in _normalize(col) or _normalize(col) in norm_label:
             return col
-    # Keyword match
-    keywords = {
-        "performance score": ["performance", "score"],
-        "passfail status": ["pass", "fail", "status", "result"],
-        "final grade": ["grade", "final"],
-        "gpa prediction": ["gpa"],
-    }
-    for key, kws in keywords.items():
-        if any(kw in norm_label for kw in kws):
-            for col in df.columns:
-                if any(kw in _normalize(col) for kw in kws):
-                    return col
-    # Fallback: last numeric column
+
+    # Word-overlap fallback
+    label_words = set(norm_label.split())
+    for col in df.columns:
+        if label_words & set(_normalize(col).split()):
+            return col
+
+    # Last resort: last numeric column
     num_cols = df.select_dtypes(include=[np.number]).columns
     return num_cols[-1] if len(num_cols) else df.columns[-1]
+
+
+# ---------------------------------------------------------------------------
+# Feature configuration – replaces the old hardcoded _PARAM_PATTERNS mapping
+# ---------------------------------------------------------------------------
+
+def get_feature_config(df: pd.DataFrame, feature_cols: List[str]) -> Dict[str, Dict]:
+    """
+    Return statistical metadata for every feature column.
+
+    Schema per column:
+        {
+            "min":  float,
+            "max":  float,
+            "mean": float,
+            "std":  float,
+        }
+
+    This drives the scenario sliders dynamically so they always reflect
+    the actual uploaded dataset rather than any hardcoded domain values.
+    """
+    config: Dict[str, Dict] = {}
+    for col in feature_cols:
+        series = df[col].dropna()
+        config[col] = {
+            "min": float(series.min()),
+            "max": float(series.max()),
+            "mean": float(series.mean()),
+            "std": float(series.std()) if len(series) > 1 else 0.0,
+        }
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -236,16 +236,17 @@ def train_final_model(
     model_type: str,
     task_type: str,
     hyperparams: Dict = None,
-) -> Tuple[Pipeline, Dict[str, float], List[str], Optional[LabelEncoder], Dict[str, Optional[str]]]:
+) -> Tuple[Pipeline, Dict[str, float], List[str], Optional[LabelEncoder], Dict[str, Dict]]:
     """
     Train the user-selected model and return everything needed for prediction.
 
     Returns:
-        pipeline           – fitted sklearn Pipeline (scaler + model)
-        metrics            – {accuracy, precision, recall, f1Score}
-        feature_cols       – list of feature column names used for training
-        label_encoder      – fitted LabelEncoder (classification only, else None)
-        param_col_mapping  – {slider_param: csv_column_name}
+        pipeline        – fitted sklearn Pipeline (scaler + model)
+        metrics         – {accuracy, precision, recall, f1Score}
+        feature_cols    – list of feature column names used for training
+        label_encoder   – fitted LabelEncoder (classification only, else None)
+        feature_config  – {col: {min, max, mean, std}} for all feature columns;
+                          drives scenario sliders dynamically for any dataset
     """
     X, y, feature_cols, label_encoder = prepare_data(df, target_col, task_type)
     X_train, X_test, y_train, y_test = train_test_split(
@@ -261,13 +262,13 @@ def train_final_model(
             estimator = m
             break
     if estimator is None:
-        estimator = list(available.values())[0]  # default to first
+        estimator = list(available.values())[0]
 
     pipeline = Pipeline([("scaler", StandardScaler()), ("model", estimator)])
     pipeline.fit(X_train, y_train)
 
     y_pred = pipeline.predict(X_test)
     metrics = _compute_metrics(y_test, y_pred, task_type)
-    param_col_mapping = get_param_col_mapping(df, feature_cols)
+    feature_config = get_feature_config(df, feature_cols)
 
-    return pipeline, metrics, feature_cols, label_encoder, param_col_mapping
+    return pipeline, metrics, feature_cols, label_encoder, feature_config
