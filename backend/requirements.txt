@@ -1,0 +1,14 @@
+# SimuCast Backend Dependencies
+
+# Web framework
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9    # Required for file uploads (UploadFile)
+
+# Data processing
+pandas>=2.0.0
+numpy>=1.26.0
+openpyxl>=3.1.2            # XLSX read/write support for pandas
+
+# Machine learning
+scikit-learn>=1.4.0
